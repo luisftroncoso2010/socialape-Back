@@ -1,17 +1,5 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * const {onCall} = require("firebase-functions/v2/https");
- * const {onDocumentWritten} = require("firebase-functions/v2/firestore");
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
-
-const {onRequest} = require("firebase-functions/v2/https");
-const logger = require("firebase-functions/logger");
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-
 const express = require("express");
 const app = express();
 admin.initializeApp();
@@ -27,21 +15,11 @@ const config = {
   measurementId: "G-X99WK3C2YV"
 };
 
-
 const firebase = require("firebase");
+const { error } = require("firebase-functions/logger");
 firebase.initializeApp(config);
 
-
 const db = admin.firestore();
-
-
-// Create and deploy your first functions
-// https://firebase.google.com/docs/functions/get-started
-
-exports.helloWorld = onRequest((request, response) => {
-  logger.info("Hello logs!", {structuredData: true});
-  response.send("Hello from Firebase!");
-});
 
 app.get("/screams", (req, res) =>{
   db
@@ -64,22 +42,49 @@ app.get("/screams", (req, res) =>{
       console.error(err);
       res.status(500).json({error:'Algo salio mal'}); // Respond with 500 Internal Server Error
     });  
-})
+});
 
-
-
-app.post("/scream", (req, res) => {
-  if (req.method !== "POST"){
-    return res.status(400).json({error: "Method no allowed"});
+const FBAuth = ((req, res, next) =>{
+  let idToken;
+  if(req.headers.authorization && req.headers.authorization.startsWith("Bearer ")){
+    idToken = req.headers.authorization.split("Bearer ")[1];
+  } else {
+    console.error("No token found");
+    return res.status(403).json({error: "Unauthorized"})
   }
+
+  admin.auth().verifyIdToken(idToken)
+    .then((decodedToken) => {
+      req.user = decodedToken;
+      console.log(decodedToken);
+      return db.collection("users") 
+        .where("userId", "==", req.user.uid)
+        .limit(1)
+        .get();
+    })
+    .then((data) =>{
+      req.user.handle = data.docs[0].data().handle;
+      return next();
+    })
+    .catch((err) => {
+      console.error("Error while verifying token", err);
+      return res.status(403).json(err);      
+    })
+});
+
+// Post one scream
+app.post("/scream", FBAuth, (req, res) => {
+  if(req.body.body.trim() === ''){
+    return res.status(400).json({body: "Body must not be empty"});
+  } 
+
   const newScream = {
     body: req.body.body,
-    userHandle: req.body.userHandle,
+    userHandle: req.user.handle,
     createdAt: new Date().toISOString()
   };
 
-  admin.firestore()
-    .collection("screams")
+  db.collection("screams")
     .add(newScream)
     .then((doc) => {
       res.json({ message: `document ${doc.id} created successfully`});
@@ -87,7 +92,7 @@ app.post("/scream", (req, res) => {
     .catch((err) => {
       res.status(500).json({err: `something went wrong`});
       console.error(err);
-    });
+    })
 });
 
 const isEmail = ((email) =>{
